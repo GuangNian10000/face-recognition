@@ -1,143 +1,97 @@
-# Real-Time Face Recognition
+# Real-Time Face Recognition Stream Server
 
-   <p align="center">
-   <img src="./assets/face-recognition.gif" alt="Face Recognition" />
-   <br>
-   <em>Face Recognition</em>
-   </p>
+本项目是一个高性能的人脸识别流媒体服务器，基于 PyTorch 实现。它集成了人脸检测、特征提取与实时流处理，支持通过 **TCP** 发送实时识别结果，并通过 **HTTP** 接口进行人员管理与配置。
 
-## Table of Contents
+<p align="center">
+  <img src="./assets/face-recognition.gif" alt="Face Recognition" />
+  <br>
+  <em>实时人脸识别系统</em>
+</p>
 
-- [Architecture](#architecture)
-- [How to use](#how-to-use)
-  - [Create Environment and Install Packages](#create-environment-and-install-packages)
-  - [Add new persons to datasets](#add-new-persons-to-datasets)
-- [Technology](#technology)
-  - [Face Detection](#face-detection)
-  - [Face Recognition](#face-recognition)
-  - [Face Tracking](#face-tracking)
-  - [Matching Algorithm](#matching-algorithm)
-- [Reference](#reference)
+## 主要特性
 
-## Architecture
+- **双协议支持**：
+  - **TCP (Port 9000)**：用于实时推送识别结果（人脸坐标、姓名、描述、置信度）以及接收控制指令（心跳、增删查）。
+  - **HTTP (Port 8000)**：用于人员录入、删除、查询、获取实时画面帧以及服务端配置修改。
+- **核心算法**：
+  - **检测**：YOLOv5-Face (默认使用 `yolov5n-face`)。
+  - **识别**：ArcFace (默认使用 `iresnet100`)。
+- **动态管理**：无需重启服务即可通过 TCP/HTTP 实时录入或删除人脸特征。
+- **配置持久化**：支持动态调整阈值、画面翻转等配置，并自动保存到本地 JSON。
 
-   <p align="center">
-   <img src="./assets/sequence-diagram.png" alt="Sequence Diagram" />
-   <br>
-   <em>Sequence Diagram</em>
-   </p>
+---
 
-## How to use
+## 快速开始
 
-### Create Environment and Install Packages
+### 1. 环境准备
+
+推荐使用 Python 3.9+ 环境：
 
 ```shell
 conda create -n face-dev python=3.9
-```
-
-```shell
 conda activate face-dev
-```
 
-```shell
-pip install torch==1.9.1+cpu torchvision==0.10.1+cpu torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
+# 安装依赖项
 pip install -r requirements.txt
 ```
 
-### Add new persons to datasets
+### 2. 模型权重
 
-1. **Create a folder with the folder name being the name of the person**
+由于模型文件较大，未包含在 Git 仓库中。请确保以下路径存在对应的权重文件：
+- `face_detection/yolov5_face/weights/yolov5n-face.pt`
+- `face_recognition/arcface/weights/arcface_r100.pth`
 
-   ```
-   datasets/
-   ├── backup
-   ├── data
-   ├── face_features
-   └── new_persons
-       ├── name-person1
-       └── name-person2
-   ```
+### 3. 启动服务
 
-2. **Add the person's photo in the folder**
+你可以直接运行 Python 脚本或使用提供的启动脚本：
 
-   ```
-   datasets/
-   ├── backup
-   ├── data
-   ├── face_features
-   └── new_persons
-       ├── name-person1
-       │   └── image1.jpg
-       │   └── image2.jpg
-       └── name-person2
-           └── image1.jpg
-           └── image2.jpg
-   ```
+```shell
+# 方式一：直接运行
+python server_stream.py
 
-3. **Run to add new persons**
+# 方式二：使用 shell 脚本启动 (推荐)
+chmod +x start_server.sh
+./start_server.sh
+```
 
-   ```shell
-   python add_persons.py
-   ```
+---
 
-4. **Run to recognize**
+## 接口说明
 
-   ```shell
-   python recognize.py
-   ```
+### TCP 控制接口 (Port 9000)
+服务端启动后会监听 9000 端口，以 **JSON 换行符（`\n`）** 的形式与客户端通讯。
 
-## Technology
+- **事件推送**：服务端自动推送格式如下：
+  ```json
+  {"type": "face_event", "count": 1, "faces": [{"name": "张三", "desc": "管理员", "score": 0.92, "box": [x, y, w, h]}]}
+  ```
+- **控制指令**：支持 `add_person`, `delete_person`, `get_faces`, `set_threshold`, `ping` 等指令。
 
-### Face Detection
+### HTTP 管理接口 (Port 8000)
+- `GET /get_faces`: 获取当前所有已录入的人员列表及头像 URL。
+- `POST /add_person`: 表单提交，上传图片并录入人脸特征。
+- `GET /current_frame`: 获取当前摄像头的实时抓拍画面（JPEG 格式）。
+- `GET /config` / `POST /config`: 查询或修改服务端配置（阈值、镜像反转、仅识别熟人模式）。
+- `GET /images/`: 静态资源服务，用于查看录入的人脸底照。
 
-1. **Retinaface**
+---
 
-   - Retinaface is a powerful face detection algorithm known for its accuracy and speed. It utilizes a single deep convolutional network to detect faces in an image with high precision.
+## 目录结构
 
-2. **Yolov5-face**
+```text
+.
+├── datasets/
+│   ├── data/            # 原始人脸底照存储 (按姓名分文件夹)
+│   ├── face_features/   # 特征库文件 (feature.npz)
+│   └── server_config.json # 服务端持久化配置文件
+├── face_detection/      # YOLOv5-Face 检测模型封装
+├── face_recognition/    # ArcFace 识别模型封装
+├── server_stream.py     # 🚀 核心流媒体服务程序 (TCP + HTTP)
+└── start_server.sh      # 启动脚本
+```
 
-   - Yolov5-face is based on the YOLO (You Only Look Once) architecture, specializing in face detection. It provides real-time face detection with a focus on efficiency and accuracy.
+## 技术参考
 
-3. **SCRFD**
-   - SCRFD (Single-Shot Scale-Aware Face Detector) is designed for real-time face detection across various scales. It is particularly effective in detecting faces at different resolutions within the same image.
-
-### Face Recognition
-
-1. **ArcFace**
-
-   - ArcFace is a state-of-the-art face recognition algorithm that focuses on learning highly discriminative features for face verification and identification. It is known for its robustness to variations in lighting, pose, and facial expressions.
-
-   <p align="center">
-   <img src="https://user-images.githubusercontent.com/80930272/160270088-a3760d88-ebc8-4535-907e-6b684276755a.png" alt="ArcFace" />
-   <br>
-   <em>ArcFace</em>
-   </p>
-
-### Face Tracking
-
-1. **ByteTrack**
-
-   <p align="center">
-   <img src="./assets/bytetrack.png" alt="ByteTrack" />
-   <br>
-   <em>ByteTrack is a simple, fast and strong multi-object tracker.</em>
-   </p>
-
-### Matching Algorithm
-
-1. **Cosine Similarity Algorithm**
-
-   - The Cosine Similarity Algorithm is employed for matching faces based on the cosine of the angle between their feature vectors. It measures the similarity between two faces' feature representations, providing an effective approach for face recognition.
-
-   <p align="center">
-   <img src="https://user-images.githubusercontent.com/80930272/160270156-37fe3269-ca65-4692-a3b2-e9568b3876f8.png" alt="Cosine Similarity Algorithm" />
-   <br>
-   <em>Cosine Similarity Algorithm</em>
-   </p>
-
-## Reference
-
-- [ByteTrack](https://github.com/ifzhang/ByteTrack)
+- [InsightFace](https://github.com/deepinsight/insightface)
 - [Yolov5-face](https://github.com/deepcam-cn/yolov5-face)
-- [InsightFace - ArcFace](https://github.com/deepinsight/insightface/tree/master/recognition/arcface_torch)
-- [InsightFace-REST](https://github.com/SthPhoenix/InsightFace-REST)
+- [FastAPI](https://fastapi.tiangolo.com/)
