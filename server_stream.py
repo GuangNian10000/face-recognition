@@ -32,6 +32,17 @@ torch.set_num_threads(1)
 os.environ["OMP_NUM_THREADS"] = "1"
 
 
+# --- 🌟 新增：人脸追踪识别辅助函数与状态 🌟 ---
+active_face_tracks = []
+
+def get_centroid(box):
+    return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+def get_distance(p1, p2):
+    return ((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)**0.5
+# --------------------------------------------
+
+
 # ================= 1. 全局配置与状态变量 =================
 class ServerConfig(BaseModel):
     threshold: float
@@ -195,7 +206,7 @@ def video_stream_worker():
             bboxes, landmarks = detector.detect(image=frame)
 
         if len(bboxes) > 0:
-            faces_result = []
+            current_frame_results = []
 
             with feature_lock:
                 current_names = images_names
@@ -221,23 +232,78 @@ def video_stream_worker():
                     except Exception:
                         pass
 
-                # 🌟 新增拦截逻辑：开启了仅识别熟人 且 当前人脸没有名字，则跳过
-                if server_only_known and not face_name:
-                    continue
-
-                faces_result.append({
+                current_frame_results.append({
                     "name": face_name,
                     "desc": face_desc,
                     "score": round(face_score, 4),
                     "box": [int(b) for b in bboxes[i][:4]]
                 })
 
-            # 如果过滤后仍然有人脸（或者都没有过滤掉），则发送 TCP 广播
-            if len(faces_result) > 0 or not server_only_known:
+            # --- 🌟 核心改进：引入追踪与平滑逻辑 🌟 ---
+            now = time.time()
+            # 1. 尝试将当前帧的人脸匹配到现有追踪中 (使用中心点距离)
+            for face in current_frame_results:
+                matched_track = None
+                best_dist = 80  # 像素阈值，根据分辨率 640x480 设定
+                face_center = get_centroid(face['box'])
+
+                for t in active_face_tracks:
+                    t_center = get_centroid(t['last_box'])
+                    dist = get_distance(face_center, t_center)
+                    if dist < best_dist:
+                        best_dist = dist
+                        matched_track = t
+
+                if matched_track:
+                    matched_track['last_box'] = face['box']
+                    matched_track['last_seen'] = now
+                    matched_track['history'].append(face)
+                    # 如果当前识别到了熟人，且分数比之前记录的高，则更新最佳结果
+                    if face['name']:
+                        if not matched_track['best_known'] or face['score'] > matched_track['best_known']['score']:
+                            matched_track['best_known'] = face
+                else:
+                    # 未匹配到，创建新的追踪
+                    active_face_tracks.append({
+                        'id': int(now * 1000),
+                        'history': [face],
+                        'last_box': face['box'],
+                        'last_seen': now,
+                        'start_time': now,
+                        'best_known': face if face['name'] else None,
+                        'reported_known': False,
+                        'reported_unknown': False
+                    })
+
+            # 2. 清理过期追踪 (超过 1 秒未出现在画面中)
+            active_face_tracks[:] = [t for t in active_face_tracks if now - t['last_seen'] < 1.0]
+
+            # 3. 决定是否推送 TCP 消息 (平滑过滤)
+            faces_to_broadcast = []
+            for t in active_face_tracks:
+                # 情况 A: 发现了熟人
+                if t['best_known'] and not t['reported_known']:
+                    # 统计历史中熟人出现的次数，防止单帧抖动产生的误报
+                    known_count = sum(1 for h in t['history'] if h['name'])
+                    if known_count >= 2:  # 至少两帧确认为熟人
+                        print(f"🎯 [识别成功] 经过平滑确认: {t['best_known']['name']} (得分: {t['best_known']['score']})")
+                        faces_to_broadcast.append(t['best_known'])
+                        t['reported_known'] = True
+                
+                # 情况 B: 判定为陌生人 (等待较长时间确认)
+                elif not t['reported_known'] and not t['reported_unknown']:
+                    if len(t['history']) >= 10:  # 持续 10 帧 (约 0.5s) 都是未知，才判定为陌生人
+                        if not any(h['name'] for h in t['history']):
+                            if not server_only_known:
+                                print(f"👤 [识别结果] 判定为陌生人 (已持续 10 帧)")
+                                faces_to_broadcast.append(t['history'][-1])
+                            t['reported_unknown'] = True
+
+            if faces_to_broadcast:
                 event_data = {
                     "type": "face_event",
-                    "count": len(faces_result),
-                    "faces": faces_result,
+                    "count": len(faces_to_broadcast),
+                    "faces": faces_to_broadcast,
                     "global_threshold": global_threshold
                 }
                 broadcast_tcp_message(event_data)
