@@ -285,17 +285,17 @@ def video_stream_worker():
                 if t['best_known'] and not t['reported_known']:
                     # 统计历史中熟人出现的次数，防止单帧抖动产生的误报
                     known_count = sum(1 for h in t['history'] if h['name'])
-                    if known_count >= 2:  # 至少两帧确认为熟人
+                    if known_count >= 1:  # 至少两帧确认为熟人
                         print(f"🎯 [识别成功] 经过平滑确认: {t['best_known']['name']} (得分: {t['best_known']['score']})")
                         faces_to_broadcast.append(t['best_known'])
                         t['reported_known'] = True
                 
                 # 情况 B: 判定为陌生人 (等待较长时间确认)
                 elif not t['reported_known'] and not t['reported_unknown']:
-                    if len(t['history']) >= 10:  # 持续 10 帧 (约 0.5s) 都是未知，才判定为陌生人
+                    if len(t['history']) >= 6:  # 持续 10 帧 (约 0.5s) 都是未知，才判定为陌生人
                         if not any(h['name'] for h in t['history']):
                             if not server_only_known:
-                                print(f"👤 [识别结果] 判定为陌生人 (已持续 10 帧)")
+                                print(f"👤 [识别结果] 判定为陌生人 (已持续 6 帧)")
                                 faces_to_broadcast.append(t['history'][-1])
                             t['reported_unknown'] = True
 
